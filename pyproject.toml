@@ -1,6 +1,6 @@
 [project]
 name = "c-breaker"
-version = "0.1.0"
+version = "0.1.1"
 description = "A flexible circuit breaker library for Python with multiple failure detection strategies and Redis support"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -42,10 +42,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/c-breaker"
-Documentation = "https://github.com/yourusername/c-breaker#readme"
-Repository = "https://github.com/yourusername/c-breaker"
-Issues = "https://github.com/yourusername/c-breaker/issues"
+Homepage = "https://github.com/500ping/c-breaker"
+Documentation = "https://github.com/500ping/c-breaker#readme"
+Repository = "https://github.com/500ping/c-breaker"
+Issues = "https://github.com/500ping/c-breaker/issues"
 
 [build-system]
 requires = ["hatchling"]
