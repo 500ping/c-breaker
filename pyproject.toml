@@ -1,11 +1,11 @@
 [project]
 name = "c-breaker"
-version = "0.1.1"
+version = "0.1.2"
 description = "A flexible circuit breaker library for Python with multiple failure detection strategies and Redis support"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Your Name", email = "your.email@example.com" }]
+authors = [{ name = "500ping", email = "ndt512x@gmail.com" }]
 keywords = [
     "circuit-breaker",
     "resilience",
