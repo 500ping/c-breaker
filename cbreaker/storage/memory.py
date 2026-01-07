@@ -67,7 +67,7 @@ class MemoryStorage(BaseStorage):
         """Get all stored keys."""
         with self._lock:
             return list(self._data.keys())
-            
+
     def close(self) -> None:
         """Close the storage (no-op for in-memory storage)."""
         pass
