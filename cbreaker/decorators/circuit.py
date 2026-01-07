@@ -15,6 +15,7 @@ from cbreaker.enums import DetectorType
 from cbreaker.exceptions import CircuitOpenError
 from cbreaker.storage.base import BaseStorage
 from cbreaker.storage.memory import MemoryStorage
+from cbreaker.storage.redis_storage import RedisStorage
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -133,6 +134,15 @@ def circuit_breaker(
             else detector_type
         )
 
+        # Extract Redis clients from storage if using RedisStorage
+        sync_client = None
+        async_client = None
+        detector_key_prefix = "cbreaker:detector:"
+        if isinstance(storage, RedisStorage):
+            sync_client = storage._sync_client
+            async_client = storage._async_client
+            detector_key_prefix = f"{storage._key_prefix}detector:"
+
         # Create failure detector
         if detector is not None:
             failure_detector = detector
@@ -141,6 +151,10 @@ def circuit_breaker(
                 window_size=window_size,
                 failure_rate_threshold=failure_rate_threshold,
                 min_calls=min_calls,
+                name=cb_name if sync_client or async_client else None,
+                sync_client=sync_client,
+                async_client=async_client,
+                key_prefix=detector_key_prefix,
             )
         elif effective_detector_type == DetectorType.COMBINED:
             failure_detector = CombinedFailureDetector(
@@ -150,11 +164,19 @@ def circuit_breaker(
                 failure_rate_threshold=failure_rate_threshold,
                 min_calls=min_calls,
                 require_both=require_both,
+                name=cb_name if sync_client or async_client else None,
+                sync_client=sync_client,
+                async_client=async_client,
+                key_prefix=detector_key_prefix,
             )
         else:  # default: TIME_BASED
             failure_detector = TimeBasedFailureDetector(
                 failure_threshold=failure_threshold,
                 time_window_seconds=time_window_seconds,
+                name=cb_name if sync_client or async_client else None,
+                sync_client=sync_client,
+                async_client=async_client,
+                key_prefix=detector_key_prefix,
             )
 
         # Create storage
