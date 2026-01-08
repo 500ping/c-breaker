@@ -111,37 +111,49 @@ class CircuitBreaker:
 
     def _get_current_state(self) -> tuple[CircuitState, float | None, int]:
         """
-        Get current state, reading from Redis if configured.
+        Get current state from storage.
+
+        For Redis storage, always reads fresh state from Redis.
+        For memory storage, returns local cached state.
 
         Returns:
             Tuple of (state, opened_at, half_open_calls)
         """
-        if self._use_redis:
-            stored = self._storage.get(self.name)
-            if stored:
-                state = CircuitState(stored.get("state", CircuitState.CLOSED.value))
-                opened_at = stored.get("opened_at")
-                half_open_calls = stored.get("half_open_calls", 0)
-                return state, opened_at, half_open_calls
+        if not self._use_redis:
+            return self._state, self._opened_at, self._half_open_calls
+
+        stored = self._storage.get(self.name)
+        if not stored:
             return CircuitState.CLOSED, None, 0
-        return self._state, self._opened_at, self._half_open_calls
+
+        return (
+            CircuitState(stored.get("state", CircuitState.CLOSED.value)),
+            stored.get("opened_at"),
+            stored.get("half_open_calls", 0),
+        )
 
     async def _get_current_state_async(self) -> tuple[CircuitState, float | None, int]:
         """
-        Get current state asynchronously, reading from Redis if configured.
+        Get current state from storage asynchronously.
+
+        For Redis storage, always reads fresh state from Redis.
+        For memory storage, returns local cached state.
 
         Returns:
             Tuple of (state, opened_at, half_open_calls)
         """
-        if self._use_redis:
-            stored = await self._storage.get_async(self.name)
-            if stored:
-                state = CircuitState(stored.get("state", CircuitState.CLOSED.value))
-                opened_at = stored.get("opened_at")
-                half_open_calls = stored.get("half_open_calls", 0)
-                return state, opened_at, half_open_calls
+        if not self._use_redis:
+            return self._state, self._opened_at, self._half_open_calls
+
+        stored = await self._storage.get_async(self.name)
+        if not stored:
             return CircuitState.CLOSED, None, 0
-        return self._state, self._opened_at, self._half_open_calls
+
+        return (
+            CircuitState(stored.get("state", CircuitState.CLOSED.value)),
+            stored.get("opened_at"),
+            stored.get("half_open_calls", 0),
+        )
 
     def _save_state(self) -> None:
         """Save current state to storage."""
@@ -286,10 +298,8 @@ class CircuitBreaker:
     @property
     def state(self) -> CircuitState:
         """Get the current circuit state."""
-        if self._use_redis:
-            current_state, _, _ = self._get_current_state()
-            return current_state
-        return self._state
+        current_state, _, _ = self._get_current_state()
+        return current_state
 
     @property
     def is_closed(self) -> bool:
@@ -314,17 +324,11 @@ class CircuitBreaker:
             True if the request can proceed, False otherwise.
         """
         with self._lock:
-            # Get current state (from Redis if configured)
-            if self._use_redis:
-                (
-                    current_state,
-                    current_opened_at,
-                    current_half_open_calls,
-                ) = self._get_current_state()
-            else:
-                current_state = self._state
-                current_opened_at = self._opened_at
-                current_half_open_calls = self._half_open_calls
+            (
+                current_state,
+                current_opened_at,
+                current_half_open_calls,
+            ) = self._get_current_state()
 
             if current_state == CircuitState.CLOSED:
                 return True
@@ -351,17 +355,11 @@ class CircuitBreaker:
 
     async def allow_request_async(self) -> bool:
         """Async version of allow_request."""
-        # Get current state (from Redis if configured)
-        if self._use_redis:
-            (
-                current_state,
-                current_opened_at,
-                current_half_open_calls,
-            ) = await self._get_current_state_async()
-        else:
-            current_state = self._state
-            current_opened_at = self._opened_at
-            current_half_open_calls = self._half_open_calls
+        (
+            current_state,
+            current_opened_at,
+            current_half_open_calls,
+        ) = await self._get_current_state_async()
 
         if current_state == CircuitState.CLOSED:
             return True
@@ -392,17 +390,11 @@ class CircuitBreaker:
             timestamp = time.time()
             self._failure_detector.record_success(timestamp)
 
-            # Get current state (from Redis if configured)
-            if self._use_redis:
-                (
-                    current_state,
-                    current_opened_at,
-                    current_half_open_calls,
-                ) = self._get_current_state()
-            else:
-                current_state = self._state
-                current_opened_at = self._opened_at
-                current_half_open_calls = self._half_open_calls
+            (
+                current_state,
+                current_opened_at,
+                current_half_open_calls,
+            ) = self._get_current_state()
 
             if current_state == CircuitState.HALF_OPEN:
                 # Success in HALF_OPEN means we can close the circuit
@@ -417,17 +409,11 @@ class CircuitBreaker:
         timestamp = time.time()
         await self._failure_detector.record_success_async(timestamp)
 
-        # Get current state (from Redis if configured)
-        if self._use_redis:
-            (
-                current_state,
-                current_opened_at,
-                current_half_open_calls,
-            ) = await self._get_current_state_async()
-        else:
-            current_state = self._state
-            current_opened_at = self._opened_at
-            current_half_open_calls = self._half_open_calls
+        (
+            current_state,
+            current_opened_at,
+            current_half_open_calls,
+        ) = await self._get_current_state_async()
 
         if current_state == CircuitState.HALF_OPEN:
             await self._set_state_async(
@@ -447,17 +433,11 @@ class CircuitBreaker:
             timestamp = time.time()
             self._failure_detector.record_failure(timestamp, exception)
 
-            # Get current state (from Redis if configured)
-            if self._use_redis:
-                (
-                    current_state,
-                    current_opened_at,
-                    current_half_open_calls,
-                ) = self._get_current_state()
-            else:
-                current_state = self._state
-                current_opened_at = self._opened_at
-                current_half_open_calls = self._half_open_calls
+            (
+                current_state,
+                current_opened_at,
+                current_half_open_calls,
+            ) = self._get_current_state()
 
             if current_state == CircuitState.HALF_OPEN:
                 # Failure in HALF_OPEN means we need to open again
@@ -478,17 +458,11 @@ class CircuitBreaker:
         timestamp = time.time()
         await self._failure_detector.record_failure_async(timestamp, exception)
 
-        # Get current state (from Redis if configured)
-        if self._use_redis:
-            (
-                current_state,
-                current_opened_at,
-                current_half_open_calls,
-            ) = await self._get_current_state_async()
-        else:
-            current_state = self._state
-            current_opened_at = self._opened_at
-            current_half_open_calls = self._half_open_calls
+        (
+            current_state,
+            current_opened_at,
+            current_half_open_calls,
+        ) = await self._get_current_state_async()
 
         if current_state == CircuitState.HALF_OPEN:
             await self._set_state_async(
@@ -520,12 +494,7 @@ class CircuitBreaker:
             CircuitOpenError: If the circuit is open.
         """
         if not self.allow_request():
-            # Get current state for remaining timeout calculation
-            if self._use_redis:
-                current_state, current_opened_at, _ = self._get_current_state()
-            else:
-                current_state = self._state
-                current_opened_at = self._opened_at
+            current_state, current_opened_at, _ = self._get_current_state()
             raise CircuitOpenError(
                 self.name,
                 self._get_remaining_timeout(current_state, current_opened_at),
@@ -557,16 +526,7 @@ class CircuitBreaker:
             CircuitOpenError: If the circuit is open.
         """
         if not await self.allow_request_async():
-            # Get current state for remaining timeout calculation
-            if self._use_redis:
-                (
-                    current_state,
-                    current_opened_at,
-                    _,
-                ) = await self._get_current_state_async()
-            else:
-                current_state = self._state
-                current_opened_at = self._opened_at
+            current_state, current_opened_at, _ = await self._get_current_state_async()
             raise CircuitOpenError(
                 self.name,
                 self._get_remaining_timeout(current_state, current_opened_at),
@@ -586,22 +546,12 @@ class CircuitBreaker:
     def reset(self) -> None:
         """Manually reset the circuit breaker to CLOSED state."""
         with self._lock:
-            # Get current state for proper state transition
-            if self._use_redis:
-                current_state, current_opened_at, _ = self._get_current_state()
-            else:
-                current_state = self._state
-                current_opened_at = self._opened_at
+            current_state, current_opened_at, _ = self._get_current_state()
             self._set_state(CircuitState.CLOSED, current_state, current_opened_at)
 
     async def reset_async(self) -> None:
         """Async version of reset."""
-        # Get current state for proper state transition
-        if self._use_redis:
-            current_state, current_opened_at, _ = await self._get_current_state_async()
-        else:
-            current_state = self._state
-            current_opened_at = self._opened_at
+        current_state, current_opened_at, _ = await self._get_current_state_async()
         await self._set_state_async(
             CircuitState.CLOSED, current_state, current_opened_at
         )
@@ -609,38 +559,22 @@ class CircuitBreaker:
     def trip(self) -> None:
         """Manually trip the circuit breaker to OPEN state."""
         with self._lock:
-            # Get current state for proper state transition
-            if self._use_redis:
-                current_state, current_opened_at, _ = self._get_current_state()
-            else:
-                current_state = self._state
-                current_opened_at = self._opened_at
+            current_state, current_opened_at, _ = self._get_current_state()
             self._set_state(CircuitState.OPEN, current_state, current_opened_at)
 
     async def trip_async(self) -> None:
         """Async version of trip."""
-        # Get current state for proper state transition
-        if self._use_redis:
-            current_state, current_opened_at, _ = await self._get_current_state_async()
-        else:
-            current_state = self._state
-            current_opened_at = self._opened_at
+        current_state, current_opened_at, _ = await self._get_current_state_async()
         await self._set_state_async(CircuitState.OPEN, current_state, current_opened_at)
 
     def get_stats(self) -> dict[str, Any]:
         """Get current circuit breaker statistics."""
         with self._lock:
-            # Get current state (from Redis if configured)
-            if self._use_redis:
-                (
-                    current_state,
-                    current_opened_at,
-                    current_half_open_calls,
-                ) = self._get_current_state()
-            else:
-                current_state = self._state
-                current_opened_at = self._opened_at
-                current_half_open_calls = self._half_open_calls
+            (
+                current_state,
+                current_opened_at,
+                current_half_open_calls,
+            ) = self._get_current_state()
 
             return {
                 "name": self.name,

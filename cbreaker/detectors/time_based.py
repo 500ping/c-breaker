@@ -77,6 +77,16 @@ class TimeBasedFailureDetector(BaseFailureDetector):
         """Get the Redis key for storing failures."""
         return f"{self._key_prefix}{self._name}:failures"
 
+    def _check_sync_client(self) -> None:
+        """Verify sync client is available when using Redis."""
+        if self._use_redis and self._sync_client is None:
+            raise RuntimeError("Sync client not configured. Use async methods.")
+
+    def _check_async_client(self) -> None:
+        """Verify async client is available when using Redis."""
+        if self._use_redis and self._async_client is None:
+            raise RuntimeError("Async client not configured. Use sync methods.")
+
     def _cleanup_old_failures(self, current_time: float | None = None) -> None:
         """Remove failures outside the time window (in-memory)."""
         if current_time is None:
@@ -104,27 +114,67 @@ class TimeBasedFailureDetector(BaseFailureDetector):
         cutoff = current_time - self.time_window_seconds
         await self._async_client.zremrangebyscore(self._failures_key, "-inf", cutoff)
 
-    def record_success(self, timestamp: float) -> None:
-        """Record a successful call."""
+    def _cleanup_failures(self, current_time: float | None = None) -> None:
+        """Remove failures outside the time window."""
         if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError(
-                    "Sync client not configured. Use record_success_async."
-                )
-            self._cleanup_old_failures_redis(timestamp)
+            self._cleanup_old_failures_redis(current_time)
         else:
             with self._lock:
-                self._cleanup_old_failures(timestamp)
+                self._cleanup_old_failures(current_time)
+
+    async def _cleanup_failures_async(self, current_time: float | None = None) -> None:
+        """Remove failures outside the time window (async)."""
+        if self._use_redis:
+            await self._cleanup_old_failures_redis_async(current_time)
+        else:
+            with self._lock:
+                self._cleanup_old_failures(current_time)
+
+    def _add_failure(
+        self, timestamp: float, exception: Exception | None = None
+    ) -> None:
+        """Add a failure record."""
+        if self._use_redis:
+            member = f"{timestamp}:{id(exception) if exception else 0}"
+            self._sync_client.zadd(self._failures_key, {member: timestamp})
+        else:
+            with self._lock:
+                self._failures.append(timestamp)
+
+    async def _add_failure_async(
+        self, timestamp: float, exception: Exception | None = None
+    ) -> None:
+        """Add a failure record (async)."""
+        if self._use_redis:
+            member = f"{timestamp}:{id(exception) if exception else 0}"
+            await self._async_client.zadd(self._failures_key, {member: timestamp})
+        else:
+            with self._lock:
+                self._failures.append(timestamp)
+
+    def _get_failure_count(self) -> int:
+        """Get current failure count within the time window."""
+        if self._use_redis:
+            return self._sync_client.zcard(self._failures_key)
+        with self._lock:
+            return len(self._failures)
+
+    async def _get_failure_count_async(self) -> int:
+        """Get current failure count within the time window (async)."""
+        if self._use_redis:
+            return await self._async_client.zcard(self._failures_key)
+        with self._lock:
+            return len(self._failures)
+
+    def record_success(self, timestamp: float) -> None:
+        """Record a successful call."""
+        self._check_sync_client()
+        self._cleanup_failures(timestamp)
 
     async def record_success_async(self, timestamp: float) -> None:
         """Record a successful call (async)."""
-        if self._use_redis:
-            if self._async_client is None:
-                raise RuntimeError("Async client not configured. Use record_success.")
-            await self._cleanup_old_failures_redis_async(timestamp)
-        else:
-            with self._lock:
-                self._cleanup_old_failures(timestamp)
+        self._check_async_client()
+        await self._cleanup_failures_async(timestamp)
 
     def record_failure(
         self,
@@ -132,19 +182,9 @@ class TimeBasedFailureDetector(BaseFailureDetector):
         exception: Exception | None = None,
     ) -> None:
         """Record a failed call."""
-        if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError(
-                    "Sync client not configured. Use record_failure_async."
-                )
-            self._cleanup_old_failures_redis(timestamp)
-            # Use timestamp as score, unique member to allow duplicates
-            member = f"{timestamp}:{id(exception) if exception else 0}"
-            self._sync_client.zadd(self._failures_key, {member: timestamp})
-        else:
-            with self._lock:
-                self._cleanup_old_failures(timestamp)
-                self._failures.append(timestamp)
+        self._check_sync_client()
+        self._cleanup_failures(timestamp)
+        self._add_failure(timestamp, exception)
 
     async def record_failure_async(
         self,
@@ -152,48 +192,26 @@ class TimeBasedFailureDetector(BaseFailureDetector):
         exception: Exception | None = None,
     ) -> None:
         """Record a failed call (async)."""
-        if self._use_redis:
-            if self._async_client is None:
-                raise RuntimeError("Async client not configured. Use record_failure.")
-            await self._cleanup_old_failures_redis_async(timestamp)
-            member = f"{timestamp}:{id(exception) if exception else 0}"
-            await self._async_client.zadd(self._failures_key, {member: timestamp})
-        else:
-            with self._lock:
-                self._cleanup_old_failures(timestamp)
-                self._failures.append(timestamp)
+        self._check_async_client()
+        await self._cleanup_failures_async(timestamp)
+        await self._add_failure_async(timestamp, exception)
 
     def should_trip(self) -> bool:
         """Check if failures exceed threshold within time window."""
-        if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError("Sync client not configured. Use should_trip_async.")
-            self._cleanup_old_failures_redis()
-            count = self._sync_client.zcard(self._failures_key)
-            return count >= self.failure_threshold
-        else:
-            with self._lock:
-                self._cleanup_old_failures()
-                return len(self._failures) >= self.failure_threshold
+        self._check_sync_client()
+        self._cleanup_failures()
+        return self._get_failure_count() >= self.failure_threshold
 
     async def should_trip_async(self) -> bool:
         """Check if failures exceed threshold (async)."""
-        if self._use_redis:
-            if self._async_client is None:
-                raise RuntimeError("Async client not configured. Use should_trip.")
-            await self._cleanup_old_failures_redis_async()
-            count = await self._async_client.zcard(self._failures_key)
-            return count >= self.failure_threshold
-        else:
-            with self._lock:
-                self._cleanup_old_failures()
-                return len(self._failures) >= self.failure_threshold
+        self._check_async_client()
+        await self._cleanup_failures_async()
+        return await self._get_failure_count_async() >= self.failure_threshold
 
     def reset(self) -> None:
         """Reset the detector state."""
+        self._check_sync_client()
         if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError("Sync client not configured. Use reset_async.")
             self._sync_client.delete(self._failures_key)
         else:
             with self._lock:
@@ -201,29 +219,31 @@ class TimeBasedFailureDetector(BaseFailureDetector):
 
     async def reset_async(self) -> None:
         """Reset the detector state (async)."""
+        self._check_async_client()
         if self._use_redis:
-            if self._async_client is None:
-                raise RuntimeError("Async client not configured. Use reset.")
             await self._async_client.delete(self._failures_key)
         else:
             with self._lock:
                 self._failures.clear()
 
-    def get_state(self) -> dict[str, Any]:
-        """Get the current state for serialization."""
-        if self._use_redis and self._sync_client is not None:
+    def _get_failures_list(self) -> list[float]:
+        """Get list of failure timestamps."""
+        if self._use_redis:
             self._cleanup_old_failures_redis()
             members = self._sync_client.zrange(
                 self._failures_key, 0, -1, withscores=True
             )
-            failures = [score for _, score in members]
-        else:
-            with self._lock:
-                self._cleanup_old_failures()
-                failures = self._failures.copy()
+            return [score for _, score in members]
+        with self._lock:
+            self._cleanup_old_failures()
+            return self._failures.copy()
 
+    def get_state(self) -> dict[str, Any]:
+        """Get the current state for serialization."""
         return {
-            "failures": failures,
+            "failures": self._get_failures_list()
+            if not self._use_redis or self._sync_client
+            else [],
             "failure_threshold": self.failure_threshold,
             "time_window_seconds": self.time_window_seconds,
         }
@@ -231,28 +251,21 @@ class TimeBasedFailureDetector(BaseFailureDetector):
     def load_state(self, state: dict[str, Any]) -> None:
         """Load state from a dictionary."""
         failures = state.get("failures", [])
+        current_time = time.time()
+        cutoff = current_time - self.time_window_seconds
 
-        if self._use_redis and self._sync_client is not None:
+        if self._use_redis and self._sync_client:
             self._sync_client.delete(self._failures_key)
-            current_time = time.time()
-            cutoff = current_time - self.time_window_seconds
             for i, ts in enumerate(failures):
                 if ts > cutoff:
                     self._sync_client.zadd(self._failures_key, {f"{ts}:{i}": ts})
         else:
             with self._lock:
-                self._failures = failures
-                self._cleanup_old_failures()
+                self._failures = [ts for ts in failures if ts > cutoff]
 
     @property
     def failure_count(self) -> int:
         """Get the current failure count within the time window."""
-        if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError("Sync client not configured.")
-            self._cleanup_old_failures_redis()
-            return self._sync_client.zcard(self._failures_key)
-        else:
-            with self._lock:
-                self._cleanup_old_failures()
-                return len(self._failures)
+        self._check_sync_client()
+        self._cleanup_failures()
+        return self._get_failure_count()

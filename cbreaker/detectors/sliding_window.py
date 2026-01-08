@@ -87,75 +87,84 @@ class SlidingWindowFailureDetector(BaseFailureDetector):
         """Get the Redis key for storing calls."""
         return f"{self._key_prefix}{self._name}:calls"
 
-    def _record_call_redis(self, timestamp: float, is_failure: bool) -> None:
-        """Record a call to Redis list (sync)."""
-        if self._sync_client is None:
-            raise RuntimeError("Sync client not configured.")
-        record = json.dumps({"ts": timestamp, "f": is_failure})
-        pipe = self._sync_client.pipeline()
-        pipe.rpush(self._calls_key, record)
-        pipe.ltrim(self._calls_key, -self.window_size, -1)
-        pipe.execute()
+    def _check_sync_client(self) -> None:
+        """Verify sync client is available when using Redis."""
+        if self._use_redis and self._sync_client is None:
+            raise RuntimeError("Sync client not configured. Use async methods.")
 
-    async def _record_call_redis_async(
-        self, timestamp: float, is_failure: bool
-    ) -> None:
-        """Record a call to Redis list (async)."""
-        if self._async_client is None:
-            raise RuntimeError("Async client not configured.")
-        record = json.dumps({"ts": timestamp, "f": is_failure})
-        pipe = self._async_client.pipeline()
-        pipe.rpush(self._calls_key, record)
-        pipe.ltrim(self._calls_key, -self.window_size, -1)
-        await pipe.execute()
+    def _check_async_client(self) -> None:
+        """Verify async client is available when using Redis."""
+        if self._use_redis and self._async_client is None:
+            raise RuntimeError("Async client not configured. Use sync methods.")
 
-    def _get_calls_redis(self) -> list[tuple[float, bool]]:
-        """Get all calls from Redis (sync)."""
-        if self._sync_client is None:
-            raise RuntimeError("Sync client not configured.")
-        records = self._sync_client.lrange(self._calls_key, 0, -1)
-        calls = []
-        for record in records:
-            if isinstance(record, bytes):
-                record = record.decode("utf-8")
-            data = json.loads(record)
-            calls.append((data["ts"], data["f"]))
-        return calls
+    def _record_call(self, timestamp: float, is_failure: bool) -> None:
+        """Record a call to storage."""
+        if self._use_redis:
+            record = json.dumps({"ts": timestamp, "f": is_failure})
+            pipe = self._sync_client.pipeline()
+            pipe.rpush(self._calls_key, record)
+            pipe.ltrim(self._calls_key, -self.window_size, -1)
+            pipe.execute()
+        else:
+            with self._lock:
+                self._calls.append((timestamp, is_failure))
 
-    async def _get_calls_redis_async(self) -> list[tuple[float, bool]]:
-        """Get all calls from Redis (async)."""
-        if self._async_client is None:
-            raise RuntimeError("Async client not configured.")
-        records = await self._async_client.lrange(self._calls_key, 0, -1)
-        calls = []
-        for record in records:
-            if isinstance(record, bytes):
-                record = record.decode("utf-8")
-            data = json.loads(record)
-            calls.append((data["ts"], data["f"]))
-        return calls
+    async def _record_call_async(self, timestamp: float, is_failure: bool) -> None:
+        """Record a call to storage (async)."""
+        if self._use_redis:
+            record = json.dumps({"ts": timestamp, "f": is_failure})
+            pipe = self._async_client.pipeline()
+            pipe.rpush(self._calls_key, record)
+            pipe.ltrim(self._calls_key, -self.window_size, -1)
+            await pipe.execute()
+        else:
+            with self._lock:
+                self._calls.append((timestamp, is_failure))
+
+    def _get_calls(self) -> list[tuple[float, bool]]:
+        """Get all calls from storage."""
+        if self._use_redis:
+            records = self._sync_client.lrange(self._calls_key, 0, -1)
+            calls = []
+            for record in records:
+                if isinstance(record, bytes):
+                    record = record.decode("utf-8")
+                data = json.loads(record)
+                calls.append((data["ts"], data["f"]))
+            return calls
+        with self._lock:
+            return list(self._calls)
+
+    async def _get_calls_async(self) -> list[tuple[float, bool]]:
+        """Get all calls from storage (async)."""
+        if self._use_redis:
+            records = await self._async_client.lrange(self._calls_key, 0, -1)
+            calls = []
+            for record in records:
+                if isinstance(record, bytes):
+                    record = record.decode("utf-8")
+                data = json.loads(record)
+                calls.append((data["ts"], data["f"]))
+            return calls
+        with self._lock:
+            return list(self._calls)
+
+    def _calculate_failure_rate(self, calls: list[tuple[float, bool]]) -> float:
+        """Calculate failure rate from calls list."""
+        if not calls:
+            return 0.0
+        failure_count = sum(1 for _, is_failure in calls if is_failure)
+        return failure_count / len(calls)
 
     def record_success(self, timestamp: float) -> None:
         """Record a successful call."""
-        if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError(
-                    "Sync client not configured. Use record_success_async."
-                )
-            self._record_call_redis(timestamp, False)
-        else:
-            with self._lock:
-                self._calls.append((timestamp, False))
+        self._check_sync_client()
+        self._record_call(timestamp, False)
 
     async def record_success_async(self, timestamp: float) -> None:
         """Record a successful call (async)."""
-        if self._use_redis:
-            if self._async_client is None:
-                raise RuntimeError("Async client not configured. Use record_success.")
-            await self._record_call_redis_async(timestamp, False)
-        else:
-            with self._lock:
-                self._calls.append((timestamp, False))
+        self._check_async_client()
+        await self._record_call_async(timestamp, False)
 
     def record_failure(
         self,
@@ -163,15 +172,8 @@ class SlidingWindowFailureDetector(BaseFailureDetector):
         exception: Exception | None = None,
     ) -> None:
         """Record a failed call."""
-        if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError(
-                    "Sync client not configured. Use record_failure_async."
-                )
-            self._record_call_redis(timestamp, True)
-        else:
-            with self._lock:
-                self._calls.append((timestamp, True))
+        self._check_sync_client()
+        self._record_call(timestamp, True)
 
     async def record_failure_async(
         self,
@@ -179,53 +181,29 @@ class SlidingWindowFailureDetector(BaseFailureDetector):
         exception: Exception | None = None,
     ) -> None:
         """Record a failed call (async)."""
-        if self._use_redis:
-            if self._async_client is None:
-                raise RuntimeError("Async client not configured. Use record_failure.")
-            await self._record_call_redis_async(timestamp, True)
-        else:
-            with self._lock:
-                self._calls.append((timestamp, True))
+        self._check_async_client()
+        await self._record_call_async(timestamp, True)
 
     def should_trip(self) -> bool:
         """Check if failure rate exceeds threshold."""
-        if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError("Sync client not configured. Use should_trip_async.")
-            calls = self._get_calls_redis()
-        else:
-            with self._lock:
-                calls = list(self._calls)
-
+        self._check_sync_client()
+        calls = self._get_calls()
         if len(calls) < self.min_calls:
             return False
-
-        failure_count = sum(1 for _, is_failure in calls if is_failure)
-        failure_rate = failure_count / len(calls)
-        return failure_rate >= self.failure_rate_threshold
+        return self._calculate_failure_rate(calls) >= self.failure_rate_threshold
 
     async def should_trip_async(self) -> bool:
         """Check if failure rate exceeds threshold (async)."""
-        if self._use_redis:
-            if self._async_client is None:
-                raise RuntimeError("Async client not configured. Use should_trip.")
-            calls = await self._get_calls_redis_async()
-        else:
-            with self._lock:
-                calls = list(self._calls)
-
+        self._check_async_client()
+        calls = await self._get_calls_async()
         if len(calls) < self.min_calls:
             return False
-
-        failure_count = sum(1 for _, is_failure in calls if is_failure)
-        failure_rate = failure_count / len(calls)
-        return failure_rate >= self.failure_rate_threshold
+        return self._calculate_failure_rate(calls) >= self.failure_rate_threshold
 
     def reset(self) -> None:
         """Reset the detector state."""
+        self._check_sync_client()
         if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError("Sync client not configured. Use reset_async.")
             self._sync_client.delete(self._calls_key)
         else:
             with self._lock:
@@ -233,9 +211,8 @@ class SlidingWindowFailureDetector(BaseFailureDetector):
 
     async def reset_async(self) -> None:
         """Reset the detector state (async)."""
+        self._check_async_client()
         if self._use_redis:
-            if self._async_client is None:
-                raise RuntimeError("Async client not configured. Use reset.")
             await self._async_client.delete(self._calls_key)
         else:
             with self._lock:
@@ -243,12 +220,7 @@ class SlidingWindowFailureDetector(BaseFailureDetector):
 
     def get_state(self) -> dict[str, Any]:
         """Get the current state for serialization."""
-        if self._use_redis and self._sync_client is not None:
-            calls = self._get_calls_redis()
-        else:
-            with self._lock:
-                calls = list(self._calls)
-
+        calls = self._get_calls() if not self._use_redis or self._sync_client else []
         return {
             "calls": calls,
             "window_size": self.window_size,
@@ -258,42 +230,33 @@ class SlidingWindowFailureDetector(BaseFailureDetector):
 
     def load_state(self, state: dict[str, Any]) -> None:
         """Load state from a dictionary."""
-        calls = state.get("calls", [])
+        calls = state.get("calls", [])[-self.window_size :]
 
-        if self._use_redis and self._sync_client is not None:
+        if self._use_redis and self._sync_client:
             self._sync_client.delete(self._calls_key)
-            pipe = self._sync_client.pipeline()
-            for ts, is_failure in calls[-self.window_size :]:
-                record = json.dumps({"ts": ts, "f": is_failure})
-                pipe.rpush(self._calls_key, record)
-            pipe.execute()
+            if calls:
+                pipe = self._sync_client.pipeline()
+                for ts, is_failure in calls:
+                    record = json.dumps({"ts": ts, "f": is_failure})
+                    pipe.rpush(self._calls_key, record)
+                pipe.execute()
         else:
             with self._lock:
                 self._calls.clear()
-                for call in calls[-self.window_size :]:
+                for call in calls:
                     self._calls.append(tuple(call))
 
     @property
     def failure_rate(self) -> float:
         """Get the current failure rate."""
-        if self._use_redis and self._sync_client is not None:
-            calls = self._get_calls_redis()
-        else:
-            with self._lock:
-                calls = list(self._calls)
-
-        if not calls:
-            return 0.0
-        failure_count = sum(1 for _, is_failure in calls if is_failure)
-        return failure_count / len(calls)
+        calls = self._get_calls() if not self._use_redis or self._sync_client else []
+        return self._calculate_failure_rate(calls)
 
     @property
     def call_count(self) -> int:
         """Get the current number of calls in the window."""
+        self._check_sync_client()
         if self._use_redis:
-            if self._sync_client is None:
-                raise RuntimeError("Sync client not configured.")
             return self._sync_client.llen(self._calls_key)
-        else:
-            with self._lock:
-                return len(self._calls)
+        with self._lock:
+            return len(self._calls)
