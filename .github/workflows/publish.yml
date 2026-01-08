@@ -98,13 +98,13 @@ jobs:
           # Configure at: https://pypi.org/manage/project/c-breaker/settings/publishing/
           print-hash: true
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ needs.check-version.outputs.new_version }}
-          name: Release v${{ needs.check-version.outputs.new_version }}
-          generate_release_notes: true
-          files: |
-            dist/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # - name: Create GitHub Release
+      #   uses: softprops/action-gh-release@v1
+      #   with:
+      #     tag_name: v${{ needs.check-version.outputs.new_version }}
+      #     name: Release v${{ needs.check-version.outputs.new_version }}
+      #     generate_release_notes: true
+      #     files: |
+      #       dist/*
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
